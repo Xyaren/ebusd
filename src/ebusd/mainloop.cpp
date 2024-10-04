@@ -321,6 +321,10 @@ void MainLoop::run() {
                << ",\"a\":\"other\""
 #endif
                << ",\"u\":" << (now-start);
+          const string configPathCDN = m_scanHelper->getConfigPathCDN();
+          if (!configPathCDN.empty()) {
+            ostr << ",\"cp\":\"" << configPathCDN << "\"";
+          }
           m_protocol->formatInfoJson(&ostr);
           if (m_reconnectCount) {
             ostr << ",\"rc\":" << m_reconnectCount;
@@ -382,10 +386,15 @@ void MainLoop::run() {
         scanRetry = 0;  // restart scan counting
       }
       if (!req->isHttp() && (ostream.tellp() == 0 || result != RESULT_OK)) {
-        if (reqMode.listenMode != lm_direct) {
-          ostream.str("");
+        string suffix;
+        if (result == RESULT_EMPTY && ostream.tellp() > 0) {
+          suffix = ostream.str();
         }
+        ostream.str("");
         ostream << getResultCode(result);
+        if (!suffix.empty()) {
+          ostream << " " << suffix;
+        }
       }
       const auto resp = ostream.str();
       req->log(&resp);
@@ -402,7 +411,7 @@ void MainLoop::run() {
         m_messages->findAll("", "", levels, false, true, true, true, true, true, since, now, true, &messages);
         for (const auto message : messages) {
           ostream << message->getCircuit() << " " << message->getName() << " = " << dec;
-          message->decodeLastData(false, nullptr, -1, reqMode.format, &ostream);
+          message->decodeLastData(pt_any, false, nullptr, -1, reqMode.format, &ostream);
           ostream << endl;
         }
       }
@@ -608,7 +617,7 @@ result_t MainLoop::executeAuth(const vector<string>& args, string* user, ostring
 
 result_t MainLoop::executeRead(const vector<string>& args, const string& levels, ostringstream* ostream) {
   size_t argPos = 1;
-  bool hex = false, newDefinition = false;
+  bool hex = false, newDefinition = false, writeDirection = false;
   OutputFormat verbosity = OF_NONE;
   time_t maxAge = 5*60;
   string circuit, params;
@@ -621,6 +630,9 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
       if (!m_newlyDefinedMessages) {
         *ostream << "ERR: option not enabled";
         return RESULT_OK;
+      }
+      if (newDefinition) {
+        writeDirection = true;
       }
       newDefinition = true;
     } else if (args[argPos] == "-f") {
@@ -648,8 +660,15 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
       }
     } else if (args[argPos] == "-vv") {
       verbosity |= VERBOSITY_2;
-    } else if (args[argPos] == "-vvv" || args[argPos] == "-V") {
+    } else if (args[argPos] == "-vvv") {
       verbosity |= VERBOSITY_3;
+    } else if (args[argPos] == "-V") {
+      if ((verbosity & VERBOSITY_4) == VERBOSITY_4) {
+        verbosity |= OF_RAWDATA;
+      }
+      verbosity |= VERBOSITY_4;
+    } else if (args[argPos] == "-VV") {
+      verbosity |= VERBOSITY_4 | OF_RAWDATA;
     } else if (args[argPos] == "-n") {
       verbosity = (verbosity & ~OF_VALUENAME) | OF_NUMERIC;
     } else if (args[argPos] == "-N") {
@@ -723,14 +742,15 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
         "  -d ZZ        override destination address ZZ\n"
         "  -p PRIO      set the message poll priority (1-9)\n"
         "  -v           increase verbosity (include names/units/comments)\n"
-        "  -V           be very verbose (include names, units, and comments)\n"
+        "  -V           be very verbose (all attributes, plus raw data if given more than once)\n"
         "  -n           use numeric value of value=name pairs\n"
         "  -N           use numeric and named value of value=name pairs\n"
         "  -i VALUE     read additional message parameters from VALUE\n"
         "  NAME         NAME of the message to send\n"
         "  FIELD        only retrieve the field named FIELD\n"
         "  N            only retrieve the N'th field named FIELD (0-based)\n"
-        "  -def         read with explicit message definition (only if enabled):\n"
+        "  -def         read with explicit message definition (only if enabled, allow write direction if given more"
+        " than once):\n"
         "    DEFINITION message definition to use instead of known definition\n"
         "  -h           send hex read message (or answer from cache):\n"
         "    ZZ         destination address\n"
@@ -785,7 +805,7 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
       ret = message->storeLastData(master, slave);
       ostringstream result;
       if (ret == RESULT_OK) {
-        ret = message->decodeLastData(false, nullptr, -1, OF_NONE, &result);
+        ret = message->decodeLastData(pt_any, false, nullptr, -1, OF_NONE, &result);
       }
       if (ret >= RESULT_OK) {
         logInfo(lf_main, "read hex %s %s cache update: %s", message->getCircuit().c_str(), message->getName().c_str(),
@@ -830,9 +850,10 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
       return RESULT_OK;
     }
     deque<Message*> messages;
-    m_newlyDefinedMessages->findAll("", "", levels, false, true, false, false, true, false, 0, 0, false, &messages);
+    m_newlyDefinedMessages->findAll("", "", levels, false, true, writeDirection, writeDirection, true, false, 0, 0,
+        false, &messages);
     if (messages.empty()) {
-      *ostream << "ERR: bad definition: no read message";
+      *ostream << "ERR: bad definition: no read" << (writeDirection?"/write":"") << " message";
       return RESULT_OK;
     }
     message = *messages.begin();
@@ -855,13 +876,20 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
     if (verbosity & OF_NAMES) {
       *ostream << cacheMessage->getCircuit() << " " << cacheMessage->getName() << " ";
     }
-    ret = cacheMessage->decodeLastData(false, fieldIndex == -2 ? nullptr : fieldName.c_str(), fieldIndex, verbosity,
-        ostream);
-    if (ret != RESULT_OK) {
-      if (ret < RESULT_OK) {
-        logError(lf_main, "read %s %s cached: %s", cacheMessage->getCircuit().c_str(),
-            cacheMessage->getName().c_str(), getResultCode(ret));
+    ret = cacheMessage->decodeLastData(pt_any, false, fieldIndex == -2 ? nullptr : fieldName.c_str(), fieldIndex,
+        verbosity, ostream);
+    if (ret < RESULT_OK) {
+      logError(lf_main, "read %s %s cached: decode %s", cacheMessage->getCircuit().c_str(),
+          cacheMessage->getName().c_str(), getResultCode(ret));
+      const auto str = ostream->str();
+      ostream->str("");
+      *ostream << getResultCode(ret) << " in decode";
+      if (!str.empty()) {
+        *ostream << ": " << str;
       }
+      return RESULT_OK;
+    }
+    if (ret > RESULT_OK) {
       return ret;
     }
     logInfo(lf_main, "read %s %s cached: %s", cacheMessage->getCircuit().c_str(), cacheMessage->getName().c_str(),
@@ -888,13 +916,17 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
   if (verbosity & OF_NAMES) {
     *ostream << message->getCircuit() << " " << message->getName() << " ";
   }
-  ret = message->decodeLastData(false, false, fieldIndex == -2 ? nullptr : fieldName.c_str(), fieldIndex, verbosity,
+  ret = message->decodeLastData(pt_any, false, fieldIndex == -2 ? nullptr : fieldName.c_str(), fieldIndex, verbosity,
       ostream);
   if (ret < RESULT_OK) {
     logError(lf_main, "read %s %s: decode %s", message->getCircuit().c_str(), message->getName().c_str(),
         getResultCode(ret));
+    const auto str = ostream->str();
     ostream->str("");
     *ostream << getResultCode(ret) << " in decode";
+    if (!str.empty()) {
+      *ostream << ": " << str;
+    }
     return RESULT_OK;
   }
   if (ret > RESULT_OK) {
@@ -907,11 +939,19 @@ result_t MainLoop::executeRead(const vector<string>& args, const string& levels,
 result_t MainLoop::executeWrite(const vector<string>& args, const string levels, ostringstream* ostream) {
   size_t argPos = 1;
   bool hex = false, newDefinition = false;
+  OutputFormat verbosity = OF_NONE;
   string circuit;
   symbol_t srcAddress = SYN, dstAddress = SYN;
   while (args.size() > argPos && args[argPos][0] == '-') {
     if (args[argPos] == "-h") {
       hex = true;
+    } else if (args[argPos] == "-V") {
+      if ((verbosity & VERBOSITY_4) == VERBOSITY_4) {
+        verbosity |= OF_RAWDATA;
+      }
+      verbosity |= VERBOSITY_4;
+    } else if (args[argPos] == "-VV") {
+      verbosity |= VERBOSITY_4 | OF_RAWDATA;
     } else if (args[argPos] == "-def") {
       if (!m_newlyDefinedMessages) {
         *ostream << "ERR: option not enabled";
@@ -964,6 +1004,7 @@ result_t MainLoop::executeWrite(const vector<string>& args, const string levels,
         "  -s QQ        override source address QQ\n"
         "  -d ZZ        override destination address ZZ\n"
         "  -c CIRCUIT   CIRCUIT of the message to send\n"
+        "  -V           be very verbose (all attributes, plus raw data if given more than once)\n"
         "  NAME         NAME of the message to send\n"
         "  VALUE        a single field VALUE\n"
         "  -def         write with explicit message definition (only if enabled):\n"
@@ -1009,7 +1050,7 @@ result_t MainLoop::executeWrite(const vector<string>& args, const string levels,
       ret = message->storeLastData(master, slave);
       ostringstream result;
       if (ret == RESULT_OK) {
-        ret = message->decodeLastData(false, nullptr, -1, OF_NONE, &result);
+        ret = message->decodeLastData(pt_any, false, nullptr, -1, verbosity, &result);
       }
       if (ret >= RESULT_OK) {
         logInfo(lf_main, "write hex %s %s cache update: %s", message->getCircuit().c_str(),
@@ -1047,7 +1088,7 @@ result_t MainLoop::executeWrite(const vector<string>& args, const string levels,
       return RESULT_OK;
     }
     deque<Message*> messages;
-    m_newlyDefinedMessages->findAll("", "", levels, false, false, true, false, true, false, 0, 0, false, &messages);
+    m_newlyDefinedMessages->findAll("", "", levels, false, false, true, true, true, false, 0, 0, false, &messages);
     if (messages.empty()) {
       *ostream << "ERR: bad definition: no write message";
       return RESULT_OK;
@@ -1070,32 +1111,26 @@ result_t MainLoop::executeWrite(const vector<string>& args, const string levels,
         getResultCode(ret));
     return ret;
   }
-  dstAddress = message->getLastMasterData().dataAt(1);
-  if (dstAddress == BROADCAST || isMaster(dstAddress)) {
-    logNotice(lf_main, "write %s %s: %s", message->getCircuit().c_str(), message->getName().c_str(),
-        getResultCode(ret));
-    if (dstAddress == BROADCAST) {
-      *ostream << "done broadcast";
-    }
-    return RESULT_OK;
-  }
+  dstAddress = message->getLastMasterData()[1];
 
-  ret = message->decodeLastData(false, false, nullptr, -1, OF_NONE, ostream);  // decode data
-  if (ret >= RESULT_OK && ostream->str().empty()) {
-    logNotice(lf_main, "write %s %s: decode %s", message->getCircuit().c_str(), message->getName().c_str(),
-        getResultCode(ret));
-    return RESULT_OK;
-  }
-  if (ret != RESULT_OK) {
+  ret = message->decodeLastData(pt_any, false, nullptr, -1, verbosity, ostream);  // decode data
+  if (ret < RESULT_OK) {
     logError(lf_main, "write %s %s: decode %s", message->getCircuit().c_str(), message->getName().c_str(),
         getResultCode(ret));
     ostream->str("");
     *ostream << getResultCode(ret) << " in decode";
     return RESULT_OK;
   }
-  logNotice(lf_main, "write %s %s: %s", message->getCircuit().c_str(), message->getName().c_str(),
-      ostream->str().c_str());
-  return RESULT_OK;
+  if (dstAddress == BROADCAST && ostream->tellp() == 0) {
+    if (ret == RESULT_OK) {
+      *ostream << getResultCode(ret) << " ";
+    }
+    *ostream << "broadcast";
+  }
+  string code = ret == RESULT_OK ? "" : (string(getResultCode(ret)) + " ");
+  logNotice(lf_main, "write %s %s: %s%s", message->getCircuit().c_str(), message->getName().c_str(),
+      code.c_str(), ostream->str().c_str());
+  return ret;
 }
 
 result_t MainLoop::parseHexAndSend(const vector<string>& args, size_t& argPos, bool isDirectMode,
@@ -1487,7 +1522,7 @@ result_t MainLoop::executeFind(const vector<string>& args, const string& levels,
       } else if (hexFormat) {
         *ostream << message->getLastMasterData().getStr() << " / " << message->getLastSlaveData().getStr();
       } else {
-        result_t ret = message->decodeLastData(false, nullptr, -1, verbosity, ostream);
+        result_t ret = message->decodeLastData(pt_any, false, nullptr, -1, verbosity, ostream);
         if (ret != RESULT_OK) {
           *ostream << " (" << getResultCode(ret)
                    << " for " << message->getLastMasterData().getStr()
@@ -2045,7 +2080,7 @@ result_t MainLoop::executeGet(const vector<string>& args, bool* connected, ostri
       circuit = uri.substr(6, pos - 6);
       name = uri.substr(pos + 1);
     }
-    bool required = false, full = false, withWrite = false, raw = false;
+    bool required = false, full = false, withWrite = false;
     bool withDefinition = false;
     string newDefinition;
     OutputFormat verbosity = OF_NAMES;
@@ -2099,7 +2134,9 @@ result_t MainLoop::executeGet(const vector<string>& args, bool* connected, ostri
         } else if (qname == "write") {
           withWrite = parseBoolQuery(value);
         } else if (qname == "raw") {
-          raw = parseBoolQuery(value);
+          if (parseBoolQuery(value)) {
+            verbosity |= OF_RAWDATA;
+          }
         } else if (qname == "def") {
           withDefinition = parseBoolQuery(value);
         } else if (qname == "define") {
@@ -2191,7 +2228,7 @@ result_t MainLoop::executeGet(const vector<string>& args, bool* connected, ostri
           Message* next = *(it+1);
           same = next->getCircuit() == lastCircuit && next->getName() == name;
         }
-        message->decodeJson(!first, same, true, raw, verbosity, ostream);
+        message->decodeJson(!first, same, true, verbosity, ostream);
         lastName = name;
         first = false;
       }

@@ -29,16 +29,9 @@
 
 namespace ebusd {
 
-/** the default path of the configuration files. */
-#ifdef HAVE_SSL
-#define CONFIG_PATH "https" CONFIG_PATH_SUFFIX
-#else  // HAVE_SSL
-#define CONFIG_PATH "http" CONFIG_PATH_SUFFIX
-#endif  // HAVE_SSL
-
 /** the default program options. */
 static const options_t s_default_opt = {
-  .device = "/dev/ttyUSB0",
+  .device = "mdns:",
   .noDeviceCheck = false,
   .readOnly = false,
   .initialSend = false,
@@ -140,12 +133,14 @@ static string s_configPath = CONFIG_PATH;
 /** the definition of the known program arguments. */
 static const argDef argDefs[] = {
   {nullptr,          0,        nullptr,    0, "Device options:"},
-  {"device",         'd',      "DEV",      0, "Use DEV as eBUS device ("
-      "prefix \"ens:\" for enhanced high speed device or "
-      "\"enh:\" for enhanced device, with "
-      "\"IP[:PORT]\" for network device or "
-      "\"DEVICE\" for serial device"
-      ") [/dev/ttyUSB0]"},
+  {"device",         'd',      "DEV",      0, "Use DEV as eBUS device [mdns:]\n"
+      "- \"mdns:\" for auto discovery via mDNS with optional suffix \"[ID][@INTF]\" for using a specific"
+      " hardware ID and/or IP interface INTF for the discovery (only for eBUS Adapter Shield), or\n"
+      "- prefix \"ens:\" for enhanced high speed device,\n"
+      "- prefix \"enh:\" for enhanced device, or\n"
+      "- no prefix for plain device, and\n"
+      "- suffix \"IP[:PORT]\" for network device, or\n"
+      "- suffix \"DEVICE\" for serial device"},
   {"nodevicecheck",  'n',      nullptr,    0, "Skip serial eBUS device test"},
   {"readonly",       'r',      nullptr,    0, "Only read from device, never write to it"},
   {"initsend",       O_INISND, nullptr,    0, "Send an initial escape symbol after connecting device"},
@@ -155,7 +150,7 @@ static const argDef argDefs[] = {
   {"configpath",     'c',      "PATH",     0, "Read CSV config files from PATH (local folder or HTTPS URL) ["
       CONFIG_PATH "]"},
   {"scanconfig",     's',      "ADDR", af_optional, "Pick CSV config files matching initial scan ADDR: "
-      "empty for broadcast ident message (default when configpath is not given), "
+      "empty for broadcast ident message (default when neither configpath nor dumpconfig is not given), "
       "\"none\" for no initial scan message, "
       "\"full\" for full scan, "
       "a single hex address to scan, or "
@@ -164,18 +159,19 @@ static const argDef argDefs[] = {
       "arguments for checking a particular scan configuration, e.g. \"FF08070400/0AB5454850303003277201\"."},
   {"scanretries",    O_SCNRET, "COUNT",    0, "Retry scanning devices COUNT times [5]"},
   {"configlang",     O_CFGLNG, "LANG",     0,
-      "Prefer LANG in multilingual configuration files [system default language]"},
+      "Prefer LANG in multilingual configuration files [system default language, DE as fallback]"},
   {"checkconfig",    O_CHKCFG, nullptr,    0, "Check config files, then stop"},
   {"dumpconfig",     O_DMPCFG, "FORMAT", af_optional,
       "Check and dump config files in FORMAT (\"json\" or \"csv\"), then stop"},
   {"dumpconfigto",   O_DMPCTO, "FILE",     0, "Dump config files to FILE"},
   {"pollinterval",   O_POLINT, "SEC",      0, "Poll for data every SEC seconds (0=disable) [5]"},
-  {"inject",         'i',      "stop", af_optional, "Inject remaining arguments as commands or already seen messages (e.g. "
-      "\"FF08070400/0AB5454850303003277201\"), optionally stop afterwards"},
-  {nullptr,          O_INJPOS, "INJECT", af_optional|af_multiple, "Commands and/or messages to inject (if --inject was given)"},
+  {"inject",         'i',      "stop", af_optional, "Inject remaining arguments as commands or already seen messages "
+      "(e.g. \"FF08070400/0AB5454850303003277201\"), optionally stop afterwards"},
+  {nullptr,          O_INJPOS, "INJECT", af_optional|af_multiple, "Commands and/or messages to inject "
+      "(if --inject was given)"},
 #ifdef HAVE_SSL
   {"cafile",         O_CAFILE, "FILE",     0, "Use CA FILE for checking certificates (uses defaults,"
-                                              " \"#\" for insecure)"},
+      " \"#\" for insecure)"},
   {"capath",         O_CAPATH, "PATH",     0, "Use CA PATH for checking certificates (uses defaults)"},
 #endif  // HAVE_SSL
 
@@ -207,8 +203,8 @@ static const argDef argDefs[] = {
       PACKAGE_LOGFILE "]"},
   {"log",            O_LOG, "AREAS:LEVEL", 0, "Only write log for matching AREA(S) up to LEVEL"
       " (alternative to --logareas/--logevel, may be used multiple times) [all:notice]"},
-  {"logareas",       O_LOGARE, "AREAS",    0, "Only write log for matching AREA(S): main|network|bus|update|other"
-      "|all [all]"},
+  {"logareas",       O_LOGARE, "AREAS",    0, "Only write log for matching AREA(S): main|network|bus|device|update"
+      "|other|all [all]"},
   {"loglevel",       O_LOGLEV, "LEVEL",    0, "Only write log up to LEVEL: error|notice|info|debug"
       " [notice]"},
 
@@ -239,7 +235,7 @@ static int parse_opt(int key, char *arg, const argParseOpt *parseOpt, struct opt
 
   switch (key) {
   // Device options:
-  case 'd':  // --device=/dev/ttyUSB0
+  case 'd':  // --device=mdns:
     if (arg == nullptr || arg[0] == 0) {
       argParseError(parseOpt, "invalid device");
       return EINVAL;
@@ -665,7 +661,7 @@ int parse_main_args(int argc, char* argv[], char* envp[], options_t *opt) {
         logWrite(lf_main, ll_error, "invalid argument in env: %s", *env);  // force logging on exit
         return EINVAL;
       }
-      logWrite(lf_main, ll_error, "invalid/unknown argument in env (ignored): %s", *env);  // force logging
+      logWrite(lf_main, ll_notice, "invalid/unknown argument in env (ignored): %s", *env);  // force logging
     }
   }
 
@@ -674,7 +670,7 @@ int parse_main_args(int argc, char* argv[], char* envp[], options_t *opt) {
     return ret;
   }
 
-  if (!opt->readOnly && !opt->scanConfigOrPathSet) {
+  if (!opt->readOnly && !opt->scanConfigOrPathSet && opt->dumpConfig == OF_NONE) {
     opt->scanConfig = true;
     opt->initialScan = BROADCAST;
   }

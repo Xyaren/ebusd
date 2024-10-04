@@ -216,6 +216,22 @@ class DataField : public AttributedItem {
   virtual bool isList() const { return false; }
 
   /**
+   * Check if the given name is a valid identifier.
+   * @param name the name to check (and optionally normalize).
+   * @param allowFirstDigit whether to additionally allow the name to start with a digit.
+   * @param normalize whether to replace invalid characters with an underscore.
+   * @return true if the name is valid (or was normalized), false if invalid.
+   */
+  static bool checkIdentifier(const string& name, bool allowFirstDigit = false);
+
+  /**
+   * Normalize the given name to be a valid identifier.
+   * @param name the name to check and normalize.
+   * @param allowFirstDigit whether to additionally allow the name to start with a digit.
+   */
+  static void normalizeIdentifier(string& name, bool allowFirstDigit = false);
+
+  /**
    * Factory method for creating new instances.
    * @param isWriteMessage whether the field is part of a write message (default false).
    * @param isTemplate true for creating a template @a DataField.
@@ -238,6 +254,17 @@ class DataField : public AttributedItem {
    * @return the name of the specified day.
    */
   static const char* getDayName(int day);
+
+  /**
+   * Add raw data to the output (excluding the length field).
+   * @param offset the offset in the data part of the @a SymbolString.
+   * @param length the maximum number of symbols to dump.
+   * @param input the @a SymbolString to dump from.
+   * @param isJson true for JSON format, false for text.
+   * @param output the ostream to append the raw data to.
+   * @return true when something was added to the output.
+   */
+  static bool addRaw(size_t offset, size_t length, const SymbolString& input, bool isJson, ostream* output);
 
   /**
    * Returns the length of this field (or contained fields) in bytes.

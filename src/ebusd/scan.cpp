@@ -82,7 +82,7 @@ result_t ScanHelper::collectConfigFiles(const string& relPath, const string& pre
       if (!m_configHttpClient->get(uri, "", &names)) {
         return RESULT_ERR_NOTFOUND;
       }
-    } else if (!json && names[0]=='<') {  // html
+    } else if (!json && names[0] == '<') {  // html
       uri = m_configUriPrefix + relPathWithSlash + "index.json";
       json = true;
       logDebug(lf_main, "trying index.json");
@@ -99,6 +99,13 @@ result_t ScanHelper::collectConfigFiles(const string& relPath, const string& pre
       if (name == "_templates"+extension) {
         if (hasTemplates) {
           *hasTemplates = true;
+        }
+        continue;
+      }
+      if (name.back() == '/') {
+        // directory
+        if (dirs != nullptr) {
+          dirs->push_back(relPathWithSlash + name.substr(0, name.length() - 1));
         }
         continue;
       }

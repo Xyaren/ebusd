@@ -3,10 +3,23 @@
 * fix conditional messages not being sent to message definition in MQTT integration and not being used in KNX group association
 * fix CSV dump of config files on command line
 * fix DTM type with recent dates
+* fix for some updated messages not appearing on KNX or MQTT
+* fix for parsing certain condition ranges
+* fix for "reload" command not starting the scan again
+
 ## Features
 * add "inject" command
 * add config path to verbose "info" command
 * add "answer" command
+* add option to inject start-up commands
+* add verbose raw data option to "read" and "write" commands
+* add option to allow write direction in "read" command when inline defining a new message
+* add option to discover device via mDNS
+
+## Breaking Changes
+* change default config path to https://ebus.github.io/ serving files generated from new TypeSpec message definition sources
+* change validation of identifiers to no longer accept unusual characters
+* change default device connection to be resolved automatically via mDNS
 
 
 # 23.3 (2023-12-26)

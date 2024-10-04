@@ -71,7 +71,8 @@ static const argDef g_mqtt_argDefs[] = {
   {"mqttretain",   O_RETA, nullptr,      0, "Retain all topics instead of only selected global ones"},
   {"mqttqos",      O_PQOS, "QOS",        0, "Set the QoS value for all topics (0-2) [0]"},
   {"mqttint",      O_INTF, "FILE",       0, "Read MQTT integration settings from FILE (no default)"},
-  {"mqttvar",      O_IVAR, "NAME=VALUE[,...]", 0, "Add variable(s) to the read MQTT integration settings"},
+  {"mqttvar",      O_IVAR, "NAME[+]=VALUE[,...]", 0, "Add variable(s) to the read MQTT integration settings "
+   "(append to already existing value with \"NAME+=VALUE\")"},
   {"mqttjson",     O_JSON, "short", af_optional,
    "Publish in JSON format instead of strings, optionally in short (value directly below field key)"},
   {"mqttverbose",  O_VERB, nullptr,      0, "Publish all available attributes"},
@@ -818,7 +819,8 @@ void MqttHandler::run() {
             }
             message->setDataHandlerState(1, true);
           } else if (message->getCreateTime() <= m_definitionsSince  // only newer defined
-          && (!message->isConditional() || message->getAvailableSinceTime() <= m_definitionsSince)) {  // unless conditional
+          && (!message->isConditional()  // unless conditional
+            || message->getAvailableSinceTime() <= m_definitionsSince)) {
             continue;
           }
           if (!FileReader::matches(message->getCircuit(), filterCircuit, true, true)
@@ -901,7 +903,7 @@ void MqttHandler::run() {
             } else if (dataType->hasFlag(DAT)) {
               auto dt = dynamic_cast<const DateTimeDataType*>(dataType);
               if (dt->hasDate()) {
-                typeStr = dt->hasDate() ? "datetime" : "date";
+                typeStr = dt->hasTime() ? "datetime" : "date";
               } else {
                 typeStr = "time";
               }
@@ -1178,7 +1180,7 @@ void MqttHandler::publishMessage(const Message* message, ostringstream* updates,
     } else if (m_staticTopic) {
       *updates << message->getCircuit() << UI_FIELD_SEPARATOR << message->getName() << UI_FIELD_SEPARATOR;
     }
-    result_t result = message->decodeLastData(false, nullptr, -1, outputFormat, updates);
+    result_t result = message->decodeLastData(pt_any, false, nullptr, -1, outputFormat, updates);
     if (result == RESULT_EMPTY) {
       publishEmptyTopic(getTopic(message));  // alternatively: , json ? "null" : "");
       return;
@@ -1206,7 +1208,7 @@ void MqttHandler::publishMessage(const Message* message, ostringstream* updates,
       publishEmptyTopic(getTopic(message, "", name));  // alternatively: , json ? "null" : "");
       continue;
     }
-    result_t result = message->decodeLastData(false, nullptr, index, outputFormat, updates);
+    result_t result = message->decodeLastData(pt_any, false, nullptr, index, outputFormat, updates);
     if (result != RESULT_OK) {
       logOtherError("mqtt", "decode %s %s %s: %s", message->getCircuit().c_str(), message->getName().c_str(),
           name.c_str(), getResultCode(result));
